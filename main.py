@@ -5,18 +5,69 @@ import sys
 import os
 import re
 import json
+import base64
+import html
+import urllib.parse
 import subprocess
 import tempfile
 import shutil
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QLineEdit, QPushButton, QTextEdit, QGroupBox,
                              QMessageBox, QProgressBar,
-                             QComboBox, QScrollArea, QCheckBox)
-from PyQt5.QtCore import QProcess, Qt, QSize
+                             QComboBox, QScrollArea, QCheckBox, QTextBrowser,
+                             QGraphicsOpacityEffect)
+from PyQt5.QtCore import (QProcess, Qt, QSize, QTimer, QPropertyAnimation,
+                          QEasingCurve, QParallelAnimationGroup,
+                          QSequentialAnimationGroup, QPauseAnimation, QPoint, QUrl)
 from PyQt5.QtGui import QClipboard, QIcon, QPixmap
+from PyQt5.QtNetwork import QNetworkAccessManager, QNetworkRequest
+
+try:
+    import pywinstyles
+except ImportError:
+    pywinstyles = None
 
 # 应用版本号
-APP_VERSION = "V1.0.0_Release_mytiantian"
+APP_VERSION = "V1.1.0_Release_mytiantian"
+BASE_DPI = 96.0
+
+
+def configure_high_dpi():
+    """启用 Qt 高 DPI 支持，需在 QApplication 创建前调用。"""
+    os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
+    os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "1")
+    if hasattr(Qt, "AA_EnableHighDpiScaling"):
+        QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    if hasattr(Qt, "AA_UseHighDpiPixmaps"):
+        QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    policy = getattr(Qt, "HighDpiScaleFactorRoundingPolicy", None)
+    if policy is not None and hasattr(QApplication, "setHighDpiScaleFactorRoundingPolicy"):
+        QApplication.setHighDpiScaleFactorRoundingPolicy(policy.PassThrough)
+
+
+def clamp(value, minimum, maximum):
+    return max(minimum, min(maximum, value))
+
+
+class AnimatedComboBox(QComboBox):
+    """带轻量淡入动画的下拉选择器。"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._popup_animation = None
+
+    def showPopup(self):
+        super().showPopup()
+        popup = self.view().window()
+        if popup is None:
+            return
+        popup.setWindowOpacity(0.0)
+        animation = QPropertyAnimation(popup, b"windowOpacity", self)
+        animation.setStartValue(0.0)
+        animation.setEndValue(1.0)
+        animation.setDuration(140)
+        animation.setEasingCurve(QEasingCurve.OutCubic)
+        self._popup_animation = animation
+        animation.start()
 
 
 def resource_path(relative_path):
@@ -462,66 +513,83 @@ DEVICE_DATABASE = {
 THEMES = {
     'light': {
         'name': '浅色',
-        'app_bg': '#f0f2f5',
-        'card_bg': '#ffffff',
+        'app_bg': 'rgba(245, 247, 250, 0.52)',
+        'card_bg': 'rgba(255, 255, 255, 0.76)',
         'text': '#1a1a2e',
         'text_secondary': '#666680',
         'accent': '#4a90d9',
         'accent_hover': '#357abd',
-        'border': '#dde1e6',
-        'log_bg': '#ffffff',
+        'border': 'rgba(210, 218, 228, 0.78)',
+        'log_bg': 'rgba(255, 255, 255, 0.68)',
         'log_text': '#1a1a2e',
-        'btn_bg': '#e8ecf1',
+        'btn_bg': 'rgba(232, 236, 241, 0.82)',
         'btn_text': '#1a1a2e',
-        'btn_hover': '#dde1e6',
+        'btn_hover': 'rgba(221, 225, 230, 0.92)',
         'btn_primary_bg': '#4a90d9',
         'btn_primary_hover': '#357abd',
         'btn_primary_text': '#ffffff',
         'btn_success_bg': '#52c41a',
         'btn_success_hover': '#45a615',
         'btn_success_text': '#ffffff',
-        'input_bg': '#ffffff',
+        'input_bg': 'rgba(255, 255, 255, 0.78)',
         'input_text': '#1a1a2e',
-        'input_border': '#d0d5dd',
+        'input_border': 'rgba(208, 213, 221, 0.86)',
         'input_focus': '#4a90d9',
         'group_title': '#4a90d9',
-        'progress_bg': '#e8ecf1',
+        'progress_bg': 'rgba(232, 236, 241, 0.70)',
         'progress_chunk': '#4a90d9',
-        'scrollbar_bg': '#e8ecf1',
-        'scrollbar_thumb': '#c0c4cc',
+        'scrollbar_bg': 'rgba(232, 236, 241, 0.35)',
+        'scrollbar_thumb': 'rgba(192, 196, 204, 0.72)',
         'shadow': 'rgba(0,0,0,0.06)',
     },
     'dark': {
         'name': '深色',
-        'app_bg': '#0f0f1a',
-        'card_bg': '#1a1a2e',
+        'app_bg': 'rgba(15, 15, 26, 0.58)',
+        'card_bg': 'rgba(26, 26, 46, 0.74)',
         'text': '#e4e6eb',
         'text_secondary': '#b0b3b8',
         'accent': '#5b9bd5',
         'accent_hover': '#4a8ac4',
-        'border': '#2d2d44',
-        'log_bg': '#1a1a2e',
+        'border': 'rgba(69, 75, 104, 0.72)',
+        'log_bg': 'rgba(26, 26, 46, 0.68)',
         'log_text': '#e4e6eb',
-        'btn_bg': '#2a2a44',
+        'btn_bg': 'rgba(42, 42, 68, 0.82)',
         'btn_text': '#e4e6eb',
-        'btn_hover': '#35355a',
+        'btn_hover': 'rgba(53, 53, 90, 0.92)',
         'btn_primary_bg': '#5b9bd5',
         'btn_primary_hover': '#4a8ac4',
         'btn_primary_text': '#ffffff',
         'btn_success_bg': '#45a615',
         'btn_success_hover': '#3a8e11',
         'btn_success_text': '#ffffff',
-        'input_bg': '#252540',
+        'input_bg': 'rgba(37, 37, 64, 0.82)',
         'input_text': '#e4e6eb',
-        'input_border': '#3d3d5c',
+        'input_border': 'rgba(77, 77, 111, 0.82)',
         'input_focus': '#5b9bd5',
         'group_title': '#5b9bd5',
-        'progress_bg': '#2a2a44',
+        'progress_bg': 'rgba(42, 42, 68, 0.70)',
         'progress_chunk': '#5b9bd5',
-        'scrollbar_bg': '#1a1a2e',
-        'scrollbar_thumb': '#3d3d5c',
+        'scrollbar_bg': 'rgba(26, 26, 46, 0.35)',
+        'scrollbar_thumb': 'rgba(77, 77, 92, 0.72)',
         'shadow': 'rgba(0,0,0,0.30)',
     }
+}
+
+WINDOW_STYLE_CONFIG = {
+    'light': {
+        'style': 'acrylic',
+        'fallback_style': 'aero',
+        'header_color': '#ffffff',
+        'title_color': '#1a1a2e',
+        'border_color': '#4a90d9',
+    },
+    'dark': {
+        'style': 'acrylic',
+        'fallback_style': 'dark',
+        'header_color': '#1a1a2e',
+        'title_color': '#e4e6eb',
+        'border_color': '#5b9bd5',
+    },
 }
 
 # ── 多语言翻译 ────────────────────────────────────────
@@ -534,6 +602,7 @@ TR = {
     # 标签
     'series':       {'zh': '系列', 'en': 'Series'},
     'model':        {'zh': '型号', 'en': 'Model'},
+    'select_device': {'zh': '请选择设备', 'en': 'Please select a device'},
     'model_sw_ver_label': {'zh': '项目代号', 'en': 'Project Code'},
     'device_model_label': {'zh': '入网型号', 'en': 'Network Model'},
     'sw_version_label':   {'zh': '系统软件版本', 'en': 'System Version'},
@@ -558,6 +627,13 @@ TR = {
     'theme_toggle':    {'zh': '切换深色模式', 'en': 'Toggle Light Mode'},
     'lang_toggle':     {'zh': 'EN', 'en': '中'},
     'lang_tip':        {'zh': '切换为英文', 'en': 'Switch to Chinese'},
+    'update_log_title': {'zh': '更新日志', 'en': 'Update Log'},
+    'update_log_empty': {'zh': '本次响应中未找到可展示的更新日志。', 'en': 'No displayable update log was found in this response.'},
+    'update_log_loading': {'zh': '正在加载更新日志页面...', 'en': 'Loading update log page...'},
+    'update_log_load_failed': {'zh': '更新日志页面加载失败。', 'en': 'Failed to load the update log page.'},
+    'update_log_link': {'zh': '更新日志', 'en': 'Update Log'},
+    'update_log_expand': {'zh': '更\n新\n日\n志\n◀', 'en': 'L\no\ng\n◀'},
+    'update_log_collapse': {'zh': '更\n新\n日\n志\n▶', 'en': 'L\no\ng\n▶'},
     # 消息弹窗
     'warn_fill_all':   {'zh': '请填写所有参数后再开始获取链接！\n\n- 项目代号\n- 入网型号\n- 系统软件版本\n- 底层安卓版本（需为数字）',
                          'en': 'Please fill in all parameters before getting the link!\n\n- Project Code\n- Network Model\n- System Version\n- Android Version (digits only)'},
@@ -573,7 +649,7 @@ TR = {
     'exec_cmd':     {'zh': '执行命令', 'en': 'Command'},
     'error_exec_fail': {'zh': '执行失败！错误码', 'en': 'Execution failed! Exit code'},
     'error_no_java': {'zh': '未找到 Java 运行时环境', 'en': 'Java runtime not found'},
-    'done':         {'zh': '[完成] OTA Tracker 运行结束！', 'en': '[Done] OTA Tracker finished!'},
+    'done':         {'zh': '任务执行完毕', 'en': 'Task completed'},
     'ota_banner':   {'zh': 'OTA 更新信息', 'en': 'OTA Update Info'},
     # 结果字段
     'device_type_field': {'zh': '设备类型', 'en': 'Device Type'},
@@ -599,9 +675,64 @@ def t(key, lang='zh'):
     entry = TR.get(key, {})
     return entry.get(lang, key)
 
+
+SERIES_NAME_EN = {
+    'NEX 系列': 'NEX Series',
+    'X 系列': 'X Series',
+    'S 系列': 'S Series',
+    'Y 系列': 'Y Series',
+    'T 系列': 'T Series',
+    'Z 系列': 'Z Series',
+    'U 系列': 'U Series',
+    'G 系列': 'G Series',
+    'iQOO 旗舰系列': 'iQOO Flagship Series',
+    'iQOO Neo 系列': 'iQOO Neo Series',
+    'iQOO Z 系列': 'iQOO Z Series',
+    'iQOO U 系列': 'iQOO U Series',
+    '平板电脑': 'Tablets',
+    '穿戴设备': 'Wearables',
+}
+
+MODEL_NAME_EN_REPLACEMENTS = (
+    ('卫星通信版', 'Satellite Edition'),
+    ('移动全网通', 'China Mobile Edition'),
+    ('双屏版', 'Dual Screen Edition'),
+    ('天玑9000版', 'Dimensity 9000 Edition'),
+    ('骁龙680', 'Snapdragon 680'),
+    ('蓝牙版', 'Bluetooth Edition'),
+    ('标准版', 'Standard Edition'),
+    ('活力版', 'Vitality Edition'),
+    ('元气版', 'Vitality Edition'),
+    ('幻彩版', 'Glamour Edition'),
+    ('曲屏版', 'Curved Screen Edition'),
+    ('柔光版', 'Aura Light Edition'),
+    ('远航版', 'Voyage Edition'),
+    ('竞速版', 'Racing Edition'),
+    ('极速版', 'Speed Edition'),
+    ('全网通', 'All Netcom'),
+)
+
+
+def display_series_name(series, lang='zh'):
+    if lang == 'en':
+        return SERIES_NAME_EN.get(series, series.replace(' 系列', ' Series'))
+    return series
+
+
+def display_model_name(device, lang='zh'):
+    name = device.get('model', '') if isinstance(device, dict) else str(device or '')
+    if lang != 'en':
+        return name
+    result = name
+    for source, target in MODEL_NAME_EN_REPLACEMENTS:
+        result = result.replace(source, target)
+    result = re.sub(r'\s+', ' ', result).strip()
+    return result
+
 # ── 通用样式表生成器 ──────────────────────────────────
-def make_stylesheet(theme):
+def make_stylesheet(theme, scale=1.0):
     """根据主题生成全局 QSS"""
+    px = lambda value: max(1, int(round(value * scale)))
     return f"""
     QMainWindow {{
         background-color: {theme['app_bg']};
@@ -612,18 +743,18 @@ def make_stylesheet(theme):
     }}
     QGroupBox {{
         background-color: {theme['card_bg']};
-        border: 1px solid {theme['border']};
-        border-radius: 10px;
-        margin-top: 14px;
-        padding: 18px 14px 10px 14px;
+        border: {px(1)}px solid {theme['border']};
+        border-radius: {px(10)}px;
+        margin-top: {px(14)}px;
+        padding: {px(18)}px {px(14)}px {px(10)}px {px(14)}px;
         font-weight: bold;
-        font-size: 13px;
+        font-size: {px(13)}px;
         color: {theme['group_title']};
     }}
     QGroupBox::title {{
         subcontrol-origin: margin;
         subcontrol-position: top center;
-        padding: 0 8px;
+        padding: 0 {px(8)}px;
         color: {theme['group_title']};
     }}
     QLabel {{
@@ -633,19 +764,19 @@ def make_stylesheet(theme):
     QLineEdit {{
         background-color: {theme['input_bg']};
         color: {theme['input_text']};
-        border: 1.5px solid {theme['input_border']};
-        border-radius: 8px;
-        padding: 7px 12px;
-        font-size: 13px;
+        border: {px(2)}px solid {theme['input_border']};
+        border-radius: {px(8)}px;
+        padding: {px(7)}px {px(12)}px;
+        font-size: {px(13)}px;
     }}
     QLineEdit:focus {{
         border-color: {theme['input_focus']};
     }}
     QPushButton {{
         border: none;
-        border-radius: 8px;
-        padding: 8px 18px;
-        font-size: 13px;
+        border-radius: {px(8)}px;
+        padding: {px(8)}px {px(18)}px;
+        font-size: {px(13)}px;
         font-weight: 500;
         background-color: {theme['btn_bg']};
         color: {theme['btn_text']};
@@ -671,18 +802,18 @@ def make_stylesheet(theme):
         background-color: {theme['btn_success_bg']};
         color: {theme['btn_success_text']};
         font-weight: bold;
-        border-radius: 8px;
+        border-radius: {px(8)}px;
     }}
     QPushButton#copyBtn:hover {{
         background-color: {theme['btn_success_hover']};
     }}
     QPushButton#iconBtn {{
         background: transparent;
-        border: 1.5px solid {theme['border']};
-        border-radius: 8px;
-        padding: 6px 14px;
+        border: {px(2)}px solid {theme['border']};
+        border-radius: {px(8)}px;
+        padding: {px(6)}px {px(14)}px;
         font-weight: bold;
-        font-size: 12px;
+        font-size: {px(12)}px;
         color: {theme['text_secondary']};
     }}
     QPushButton#iconBtn:hover {{
@@ -692,34 +823,34 @@ def make_stylesheet(theme):
     QComboBox {{
         background-color: {theme['input_bg']};
         color: {theme['input_text']};
-        border: 1.5px solid {theme['input_border']};
-        border-radius: 8px;
-        padding: 7px 12px;
-        font-size: 13px;
+        border: {px(2)}px solid {theme['input_border']};
+        border-radius: {px(8)}px;
+        padding: {px(7)}px {px(12)}px;
+        font-size: {px(13)}px;
     }}
     QComboBox:hover {{
         border-color: {theme['input_focus']};
     }}
     QComboBox::drop-down {{
         border: none;
-        width: 28px;
+        width: {px(28)}px;
     }}
     QComboBox QAbstractItemView {{
         background-color: {theme['card_bg']};
         color: {theme['text']};
-        border: 1px solid {theme['border']};
+        border: {px(1)}px solid {theme['border']};
         selection-background-color: {theme['accent']};
-        border-radius: 4px;
+        border-radius: {px(4)}px;
     }}
     QCheckBox {{
         color: {theme['text_secondary']};
-        spacing: 6px;
-        font-size: 12px;
+        spacing: {px(6)}px;
+        font-size: {px(12)}px;
     }}
     QCheckBox::indicator {{
-        width: 16px; height: 16px;
-        border: 1.5px solid {theme['input_border']};
-        border-radius: 4px;
+        width: {px(16)}px; height: {px(16)}px;
+        border: {px(2)}px solid {theme['input_border']};
+        border-radius: {px(4)}px;
         background: {theme['input_bg']};
     }}
     QCheckBox::indicator:checked {{
@@ -728,34 +859,86 @@ def make_stylesheet(theme):
     }}
     QProgressBar {{
         border: none;
-        border-radius: 6px;
+        border-radius: {px(6)}px;
         background-color: {theme['progress_bg']};
-        height: 6px;
+        height: {px(6)}px;
         text-align: center;
-        font-size: 11px;
+        font-size: {px(11)}px;
     }}
     QProgressBar::chunk {{
         background-color: {theme['progress_chunk']};
-        border-radius: 6px;
+        border-radius: {px(6)}px;
     }}
     QTextEdit {{
         background-color: {theme['log_bg']};
         color: {theme['log_text']};
-        border: 1.5px solid {theme['border']};
-        border-radius: 10px;
-        padding: 12px;
+        border: {px(2)}px solid {theme['border']};
+        border-radius: {px(10)}px;
+        padding: {px(12)}px;
         font-family: "Cascadia Code", "Consolas", "Microsoft YaHei", monospace;
-        font-size: 12px;
+        font-size: {px(12)}px;
+    }}
+    QWidget#updateLogPanel {{
+        background-color: {theme['card_bg']};
+        border: {px(1)}px solid {theme['border']};
+        border-radius: {px(10)}px;
+    }}
+    QLabel#updateLogTitle {{
+        color: {theme['group_title']};
+        font-size: {px(14)}px;
+        font-weight: bold;
+    }}
+    QPushButton#updateLogCloseBtn {{
+        background-color: transparent;
+        color: {theme['text_secondary']};
+        border: none;
+        border-radius: {px(6)}px;
+        padding: {px(4)}px {px(8)}px;
+        font-size: {px(16)}px;
+        font-weight: bold;
+    }}
+    QPushButton#updateLogCloseBtn:hover {{
+        background-color: {theme['btn_hover']};
+        color: {theme['text']};
+    }}
+    QPushButton#updateLogToggleBtn {{
+        background-color: {theme['btn_primary_bg']};
+        color: {theme['btn_primary_text']};
+        border: none;
+        border-radius: {px(8)}px;
+        padding: {px(6)}px {px(10)}px;
+        font-size: {px(12)}px;
+        font-weight: bold;
+    }}
+    QPushButton#updateLogToggleBtn:hover {{
+        background-color: {theme['btn_primary_hover']};
+    }}
+    QTextBrowser#updateLogBrowser {{
+        background-color: transparent;
+        color: {theme['text']};
+        border: none;
+        padding: {px(8)}px;
+        font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+        font-size: {px(13)}px;
+    }}
+    QLabel#toastBubble {{
+        background-color: {theme['card_bg']};
+        color: {theme['text']};
+        border: {px(1)}px solid {theme['border']};
+        border-radius: {px(8)}px;
+        padding: {px(9)}px {px(14)}px;
+        font-size: {px(13)}px;
+        font-weight: 500;
     }}
     QScrollBar:vertical {{
         background: {theme['scrollbar_bg']};
-        width: 8px;
-        border-radius: 4px;
+        width: {px(8)}px;
+        border-radius: {px(4)}px;
     }}
     QScrollBar::handle:vertical {{
         background: {theme['scrollbar_thumb']};
-        border-radius: 4px;
-        min-height: 30px;
+        border-radius: {px(4)}px;
+        min-height: {px(30)}px;
     }}
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
         height: 0px;
@@ -765,13 +948,13 @@ def make_stylesheet(theme):
     }}
     QMessageBox QLabel {{
         color: {theme['text']};
-        font-size: 13px;
+        font-size: {px(13)}px;
     }}
     QMessageBox QPushButton {{
         background-color: {theme['btn_primary_bg']};
         color: {theme['btn_primary_text']};
-        border-radius: 6px;
-        padding: 6px 20px;
+        border-radius: {px(6)}px;
+        padding: {px(6)}px {px(20)}px;
         font-weight: bold;
     }}
     QMessageBox QPushButton:hover {{
@@ -783,10 +966,13 @@ def make_stylesheet(theme):
 class VivoOtaTrackerGUI(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.ui_scale = self._detect_ui_scale()
+        self._screen_change_connected = False
         self.lang = 'zh'
         self.theme = 'light'
         self.setWindowTitle(t('window_title', self.lang))
-        self.setGeometry(100, 100, 920, 680)
+        self.setGeometry(self.dp(100), self.dp(100), self.dp(920), self.dp(680))
         
         # 设置主窗口图标（使用 resource_path 兼容打包模式）
         icon_path = resource_path("assets/icon.png")
@@ -814,15 +1000,530 @@ class VivoOtaTrackerGUI(QMainWindow):
         self.current_stage = None  # 'compile' 或 'run'
         self.raw_output = ""  # 收集原始输出，用于简洁模式解析
         self.last_result_text = ""  # 缓存最后一次的简洁结果，用于复制
+        self.last_result_data = {}
+        self.last_update_log_text = ""
+        self._theme_fade_effect = None
+        self._theme_fade_animation = None
+        self._update_log_visible = False
+        self._update_log_animation = None
+        self.last_update_log_html = ""
+        self.update_log_url = ""
+        self.update_log_data_url = ""
+        self._toast_animation = None
+        self.network_manager = QNetworkAccessManager(self)
+        self.network_manager.finished.connect(self._on_update_log_page_loaded)
         
         self.init_ui()
+        QTimer.singleShot(0, self._apply_window_style)
         # 不再加载保存的配置，选型号后直接可运行
+
+    def _detect_ui_scale(self, screen=None):
+        """根据当前屏幕 DPI 计算 UI 缩放系数。"""
+        override = os.environ.get("VIVO_OTA_UI_SCALE")
+        if override:
+            try:
+                return clamp(float(override), 0.85, 2.0)
+            except ValueError:
+                pass
+
+        app = QApplication.instance()
+        screen = screen or (app.primaryScreen() if app else None)
+        if screen is None:
+            return 1.0
+
+        dpi_scale = 1.0
+        dpi = screen.logicalDotsPerInch()
+        if dpi > 0:
+            dpi_scale = dpi / BASE_DPI
+
+        pixel_ratio = screen.devicePixelRatio()
+        if pixel_ratio <= 0:
+            pixel_ratio = 1.0
+
+        return clamp(max(dpi_scale, pixel_ratio), 0.85, 2.0)
+
+    def dp(self, value):
+        """把设计稿像素转换为当前 DPI 下的逻辑尺寸。"""
+        return max(1, int(round(value * self.ui_scale)))
+
+    def _apply_dpi_scaled_sizes(self):
+        """在 DPI 变化后刷新固定尺寸和图标尺寸。"""
+        if not hasattr(self, 'main_layout'):
+            return
+
+        self.main_layout.setContentsMargins(self.dp(16), self.dp(12), self.dp(16), self.dp(12))
+        self.main_layout.setSpacing(self.dp(10))
+
+        logo_path = resource_path("assets/logo_os11_img_pad.png")
+        if os.path.exists(logo_path):
+            logo_pixmap = QPixmap(logo_path)
+            if not logo_pixmap.isNull():
+                self.logo_label.setPixmap(logo_pixmap.scaledToHeight(self.dp(36), Qt.SmoothTransformation))
+        elif self.logo_label.text():
+            self.logo_label.setStyleSheet(f"font-weight:bold; font-size:{self.dp(15)}px; color:#4a90d9;")
+        self.logo_label.setFixedHeight(self.dp(40))
+
+        self.lang_btn.setFixedSize(self.dp(48), self.dp(32))
+        self.theme_btn.setFixedSize(self.dp(120), self.dp(32))
+
+        for label in (
+            self.series_label,
+            self.model_label,
+            self.model_sw_ver_label,
+            self.device_model_label,
+            self.sw_version_label,
+            self.android_ver_label,
+        ):
+            label.setFixedWidth(self.dp(120))
+
+        self.model_combo.setMinimumWidth(self.dp(400))
+        self.android_ver_edit.setFixedWidth(self.dp(80))
+        if hasattr(self, 'log_output'):
+            self.log_output.setFixedHeight(self.dp(220))
+        self.run_btn.setIconSize(QSize(self.dp(20), self.dp(20)))
+        self.copy_btn.setIconSize(QSize(self.dp(18), self.dp(18)))
+        if hasattr(self, 'update_log_close_btn'):
+            self.update_log_close_btn.setFixedSize(self.dp(30), self.dp(28))
+            self.update_log_toggle_btn.setFixedSize(self.dp(34), self.dp(118))
+            self._position_update_log_panel(self._update_log_visible)
+
+    def _on_screen_changed(self, screen):
+        """移动到不同 DPI 屏幕后重新缩放 UI。"""
+        new_scale = self._detect_ui_scale(screen)
+        if abs(new_scale - self.ui_scale) < 0.01:
+            return
+        self.ui_scale = new_scale
+        self._apply_dpi_scaled_sizes()
+        self._apply_theme()
+
+    def _update_log_panel_geometry(self, visible=True):
+        """计算右侧更新日志面板位置。"""
+        width = min(self.dp(380), max(self.dp(300), self.central_widget.width() - self.dp(40)))
+        margin = self.dp(14)
+        height = max(self.dp(260), self.central_widget.height() - margin * 2)
+        y = margin
+        x = self.central_widget.width() - width - margin if visible else self.central_widget.width() + margin
+        return x, y, width, height
+
+    def _position_update_log_panel(self, visible=True):
+        if not hasattr(self, 'update_log_panel'):
+            return
+        x, y, width, height = self._update_log_panel_geometry(visible)
+        self.update_log_panel.setGeometry(x, y, width, height)
+        self._position_update_log_toggle()
+        self._position_toast()
+
+    def _position_update_log_toggle(self):
+        if not hasattr(self, 'update_log_toggle_btn'):
+            return
+        self.update_log_toggle_btn.move(self._update_log_toggle_pos(self._update_log_visible))
+        self.update_log_toggle_btn.raise_()
+
+    def _update_log_toggle_pos(self, panel_visible):
+        button_width = self.update_log_toggle_btn.width() or self.dp(34)
+        button_height = self.update_log_toggle_btn.height() or self.dp(118)
+        margin = self.dp(8)
+        y = max(self.dp(70), (self.central_widget.height() - button_height) // 2)
+        x = max(margin, self.central_widget.width() - button_width - self.dp(2))
+        return QPoint(x, y)
+
+    def _set_update_log_toggle_visible(self, visible):
+        if not hasattr(self, 'update_log_toggle_btn'):
+            return
+        self.update_log_toggle_btn.setVisible(visible)
+        self._position_update_log_toggle()
+
+    def _update_log_toggle_text(self):
+        if not hasattr(self, 'update_log_toggle_btn'):
+            return
+        key = 'update_log_collapse' if self._update_log_visible else 'update_log_expand'
+        self.update_log_toggle_btn.setText(t(key, self.lang))
+
+    def _position_toast(self):
+        if not hasattr(self, 'toast_label') or not self.toast_label.isVisible():
+            return
+        margin = self.dp(18)
+        self.toast_label.adjustSize()
+        x = self.central_widget.width() - self.toast_label.width() - margin
+        y = self.central_widget.height() - self.toast_label.height() - margin
+        self.toast_label.move(max(margin, x), max(margin, y))
+
+    def show_toast(self, message):
+        """右下角浮出气泡提示。"""
+        if not hasattr(self, 'toast_label'):
+            return
+        if self._toast_animation is not None:
+            self._toast_animation.stop()
+
+        self.toast_label.setText(message)
+        self.toast_label.adjustSize()
+        self.toast_label.show()
+        self.toast_label.raise_()
+        self._position_toast()
+
+        effect = QGraphicsOpacityEffect(self.toast_label)
+        effect.setOpacity(0.0)
+        self.toast_label.setGraphicsEffect(effect)
+
+        fade_in = QPropertyAnimation(effect, b"opacity", self)
+        fade_in.setStartValue(0.0)
+        fade_in.setEndValue(1.0)
+        fade_in.setDuration(160)
+        fade_in.setEasingCurve(QEasingCurve.OutCubic)
+
+        fade_out = QPropertyAnimation(effect, b"opacity", self)
+        fade_out.setStartValue(1.0)
+        fade_out.setEndValue(0.0)
+        fade_out.setDuration(220)
+        fade_out.setEasingCurve(QEasingCurve.InCubic)
+
+        def finish_toast():
+            self.toast_label.hide()
+            self.toast_label.setGraphicsEffect(None)
+            self._toast_animation = None
+
+        group = QSequentialAnimationGroup(self)
+        group.addAnimation(fade_in)
+        group.addAnimation(QPauseAnimation(1400, self))
+        group.addAnimation(fade_out)
+        group.finished.connect(finish_toast)
+        self._toast_animation = group
+        group.start()
+
+    def show_update_log_panel(self, html_content):
+        """从右侧淡入滑出更新日志面板。"""
+        if not hasattr(self, 'update_log_panel'):
+            return
+
+        self.last_update_log_html = html_content or self._build_update_log_html(t('update_log_empty', self.lang), is_html=False)
+        self.update_log_browser.setHtml(self.last_update_log_html)
+
+        if self._update_log_animation is not None:
+            self._update_log_animation.stop()
+
+        hidden_x, y, width, height = self._update_log_panel_geometry(False)
+        visible_x, _, _, _ = self._update_log_panel_geometry(True)
+        button_start = self._update_log_toggle_pos(False)
+        button_end = self._update_log_toggle_pos(True)
+        self.update_log_panel.setGeometry(hidden_x, y, width, height)
+        self.update_log_panel.raise_()
+        self.update_log_panel.show()
+        self._update_log_visible = True
+        self._set_update_log_toggle_visible(True)
+        self._update_log_toggle_text()
+        self.update_log_toggle_btn.move(button_start)
+
+        effect = QGraphicsOpacityEffect(self.update_log_panel)
+        effect.setOpacity(0.0)
+        self.update_log_panel.setGraphicsEffect(effect)
+
+        move_anim = QPropertyAnimation(self.update_log_panel, b"pos", self)
+        move_anim.setStartValue(QPoint(hidden_x, y))
+        move_anim.setEndValue(QPoint(visible_x, y))
+        move_anim.setDuration(260)
+        move_anim.setEasingCurve(QEasingCurve.OutCubic)
+
+        fade_anim = QPropertyAnimation(effect, b"opacity", self)
+        fade_anim.setStartValue(0.0)
+        fade_anim.setEndValue(1.0)
+        fade_anim.setDuration(220)
+        fade_anim.setEasingCurve(QEasingCurve.OutCubic)
+
+        button_anim = QPropertyAnimation(self.update_log_toggle_btn, b"pos", self)
+        button_anim.setStartValue(button_start)
+        button_anim.setEndValue(button_end)
+        button_anim.setDuration(260)
+        button_anim.setEasingCurve(QEasingCurve.OutCubic)
+
+        group = QParallelAnimationGroup(self)
+        group.addAnimation(move_anim)
+        group.addAnimation(fade_anim)
+        group.addAnimation(button_anim)
+
+        def finish_show():
+            self.update_log_panel.setGraphicsEffect(None)
+            self._update_log_animation = None
+            self._position_update_log_toggle()
+
+        group.finished.connect(finish_show)
+        self._update_log_animation = group
+        group.start()
+
+    def toggle_update_log_panel(self):
+        """侧边按钮切换更新日志面板。"""
+        if self._update_log_visible:
+            self.hide_update_log_panel()
+        elif self.last_update_log_html:
+            self.show_update_log_panel(self.last_update_log_html)
+
+    def load_update_log_url(self, url):
+        """加载 vivo 更新日志网页，并在右侧面板显示。"""
+        if not url:
+            return
+
+        self.update_log_url = url
+        self.update_log_data_url = ""
+        loading = t('update_log_loading', self.lang)
+        self.show_update_log_panel(self._build_update_log_html(loading, is_html=False))
+
+        request = QNetworkRequest(QUrl(url))
+        request.setRawHeader(b"User-Agent", b"Mozilla/5.0 VivoOtaTracker/1.0")
+        self.network_manager.get(request)
+
+    def _on_update_log_page_loaded(self, reply):
+        """QtNetwork 拉取更新日志网页后的回调。"""
+        url = reply.url().toString()
+
+        if reply.error():
+            message = f"{t('update_log_load_failed', self.lang)}\n\n{reply.errorString()}"
+            self.update_log_browser.setHtml(self._build_update_log_html(message, is_html=False))
+            reply.deleteLater()
+            return
+
+        data = bytes(reply.readAll())
+        reply.deleteLater()
+
+        page_text = self._decode_webpage_bytes(data)
+        if self.update_log_data_url and url == self.update_log_data_url:
+            self.last_update_log_text = self._extract_vivo_update_data_text(page_text)
+            self.last_update_log_html = self._build_vivo_update_data_html(page_text, url)
+            self.update_log_browser.setHtml(self.last_update_log_html)
+            self.last_result_text = self.format_clipboard_result(self.last_result_data, self.update_log_url)
+            return
+
+        data_url = self._find_vivo_update_data_url(page_text, url)
+        if data_url:
+            self.update_log_data_url = data_url
+            self.update_log_browser.setHtml(
+                self._build_update_log_html(t('update_log_loading', self.lang), is_html=False)
+            )
+            request = QNetworkRequest(QUrl(data_url))
+            request.setRawHeader(b"User-Agent", b"Mozilla/5.0 VivoOtaTracker/1.0")
+            self.network_manager.get(request)
+            return
+
+        self.last_update_log_html = self._build_update_log_html(self._html_to_visible_text(page_text), is_html=False)
+        self.last_update_log_text = self._html_to_visible_text(page_text)
+        self.last_result_text = self.format_clipboard_result(self.last_result_data, self.update_log_url)
+        self.update_log_browser.setHtml(self.last_update_log_html)
+
+    def _decode_webpage_bytes(self, data):
+        """兼容 vivo 页面常见编码。"""
+        for encoding in ('utf-8', 'gb18030', 'gbk'):
+            try:
+                return data.decode(encoding)
+            except UnicodeDecodeError:
+                pass
+        return data.decode('utf-8', errors='replace')
+
+    def _find_vivo_update_data_url(self, page_html, page_url):
+        """vivo 更新日志模板正文通常来自同目录 data/CN.js。"""
+        if './data/' not in page_html and '/data/' not in page_html:
+            return ""
+
+        parsed = urllib.parse.urlparse(page_url)
+        query = urllib.parse.parse_qs(parsed.query)
+        lang = query.get('language', ['CN'])[0] or 'CN'
+        if lang.upper() in ('ZH_CN', 'CN-ZH'):
+            lang = 'CN'
+        data_path = f"data/{lang}.js"
+        return urllib.parse.urljoin(page_url, data_path)
+
+    def _build_vivo_update_data_html(self, data_text, source_url):
+        """把 vivo data/CN.js JSON 转成可读更新日志 HTML。"""
+        try:
+            data = json.loads(data_text)
+        except Exception:
+            return self._build_update_log_html(self._html_to_visible_text(data_text), is_html=False)
+
+        parts = []
+
+        head = data.get('headContent')
+        if isinstance(head, str) and head.strip():
+            parts.append(f'<p>{html.escape(head.strip())}</p>')
+
+        def desc_items(item):
+            values = []
+            desc = item.get('descContents')
+            if isinstance(desc, list):
+                for entry in desc:
+                    if isinstance(entry, str):
+                        values.append(entry)
+                    elif isinstance(entry, dict):
+                        value = entry.get('content') or entry.get('text')
+                        if isinstance(value, str):
+                            values.append(value)
+            if not values and isinstance(item.get('content'), list):
+                values.extend(str(v) for v in item['content'] if str(v).strip())
+            return values
+
+        def append_section(item, level=3):
+            if not isinstance(item, dict):
+                return
+            title = item.get('title')
+            children = item.get('children')
+            lines = desc_items(item)
+            if title:
+                tag = 'h2' if level <= 2 else 'h3'
+                parts.append(f'<{tag}>{html.escape(str(title))}</{tag}>')
+            if lines:
+                parts.append('<ul>')
+                for line in lines:
+                    parts.append(f'<li>{html.escape(str(line).strip())}</li>')
+                parts.append('</ul>')
+            if isinstance(children, list):
+                for child in children:
+                    append_section(child, level + 1)
+
+        body = data.get('body')
+        if isinstance(body, list):
+            for item in body:
+                append_section(item)
+
+        if not parts:
+            parts.append(f'<p class="empty">{html.escape(t("update_log_empty", self.lang))}</p>')
+
+        return self._build_update_log_html(''.join(parts), is_html=True)
+
+    def _extract_vivo_update_data_text(self, data_text):
+        """把 vivo data/CN.js JSON 转成剪贴板纯文本。"""
+        try:
+            data = json.loads(data_text)
+        except Exception:
+            return self._html_to_visible_text(data_text)
+
+        lines = []
+        head = data.get('headContent')
+        if isinstance(head, str) and head.strip():
+            lines.append(head.strip())
+
+        def desc_items(item):
+            values = []
+            desc = item.get('descContents')
+            if isinstance(desc, list):
+                for entry in desc:
+                    if isinstance(entry, str):
+                        values.append(entry)
+                    elif isinstance(entry, dict):
+                        value = entry.get('content') or entry.get('text')
+                        if isinstance(value, str):
+                            values.append(value)
+            if not values and isinstance(item.get('content'), list):
+                values.extend(str(v) for v in item['content'] if str(v).strip())
+            return values
+
+        def append_section(item):
+            if not isinstance(item, dict):
+                return
+            title = item.get('title')
+            if title:
+                if lines and lines[-1] != "":
+                    lines.append("")
+                lines.append(str(title).strip())
+            for line in desc_items(item):
+                value = str(line).strip()
+                if value:
+                    lines.append(value)
+            children = item.get('children')
+            if isinstance(children, list):
+                for child in children:
+                    append_section(child)
+
+        body = data.get('body')
+        if isinstance(body, list):
+            for item in body:
+                append_section(item)
+
+        return '\n'.join(line for line in lines if line is not None).strip()
+
+    def _html_to_visible_text(self, page_html):
+        """粗略提取 HTML 可见文本，用于非 vivo 模板页面兜底。"""
+        text = re.sub(r'<script\b[^>]*>.*?</script>', ' ', page_html, flags=re.I | re.S)
+        text = re.sub(r'<style\b[^>]*>.*?</style>', ' ', text, flags=re.I | re.S)
+        text = re.sub(r'<!--.*?-->', ' ', text, flags=re.S)
+        text = re.sub(r'</(p|div|li|dt|dd|h[1-6]|section|br)\s*>', '\n', text, flags=re.I)
+        text = re.sub(r'<[^>]+>', ' ', text)
+        text = html.unescape(text)
+        lines = [re.sub(r'\s+', ' ', line).strip() for line in text.splitlines()]
+        lines = [line for line in lines if line]
+        return '\n'.join(lines) or t('update_log_empty', self.lang)
+
+    def hide_update_log_panel(self):
+        """隐藏右侧更新日志面板。"""
+        if not hasattr(self, 'update_log_panel') or not self.update_log_panel.isVisible():
+            return
+
+        if self._update_log_animation is not None:
+            self._update_log_animation.stop()
+
+        visible_x, y, width, height = self._update_log_panel_geometry(True)
+        hidden_x, _, _, _ = self._update_log_panel_geometry(False)
+        button_start = self._update_log_toggle_pos(True)
+        button_end = self._update_log_toggle_pos(False)
+        self.update_log_panel.setGeometry(visible_x, y, width, height)
+        self.update_log_toggle_btn.move(button_start)
+        self._update_log_visible = False
+        self._update_log_toggle_text()
+
+        effect = QGraphicsOpacityEffect(self.update_log_panel)
+        effect.setOpacity(1.0)
+        self.update_log_panel.setGraphicsEffect(effect)
+
+        move_anim = QPropertyAnimation(self.update_log_panel, b"pos", self)
+        move_anim.setStartValue(QPoint(visible_x, y))
+        move_anim.setEndValue(QPoint(hidden_x, y))
+        move_anim.setDuration(220)
+        move_anim.setEasingCurve(QEasingCurve.InCubic)
+
+        fade_anim = QPropertyAnimation(effect, b"opacity", self)
+        fade_anim.setStartValue(1.0)
+        fade_anim.setEndValue(0.0)
+        fade_anim.setDuration(180)
+        fade_anim.setEasingCurve(QEasingCurve.InCubic)
+
+        button_anim = QPropertyAnimation(self.update_log_toggle_btn, b"pos", self)
+        button_anim.setStartValue(button_start)
+        button_anim.setEndValue(button_end)
+        button_anim.setDuration(220)
+        button_anim.setEasingCurve(QEasingCurve.InCubic)
+
+        group = QParallelAnimationGroup(self)
+        group.addAnimation(move_anim)
+        group.addAnimation(fade_anim)
+        group.addAnimation(button_anim)
+
+        def finish_hide():
+            self.update_log_panel.hide()
+            self.update_log_panel.setGraphicsEffect(None)
+            self._update_log_animation = None
+            self._update_log_toggle_text()
+            self._position_update_log_toggle()
+
+        group.finished.connect(finish_hide)
+        self._update_log_animation = group
+        group.start()
+
+    def reset_update_log_panel(self):
+        """开始新查询前清理旧的更新日志状态。"""
+        if self._update_log_animation is not None:
+            self._update_log_animation.stop()
+            self._update_log_animation = None
+        if hasattr(self, 'update_log_panel'):
+            self.update_log_panel.hide()
+            self.update_log_panel.setGraphicsEffect(None)
+        self._update_log_visible = False
+        self.last_update_log_html = ""
+        self.update_log_url = ""
+        self.update_log_data_url = ""
+        self._set_update_log_toggle_visible(False)
+
     def init_ui(self):
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(16, 12, 16, 12)
-        main_layout.setSpacing(10)
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+        self.main_layout = QVBoxLayout(self.central_widget)
+        main_layout = self.main_layout
+        main_layout.setContentsMargins(self.dp(16), self.dp(12), self.dp(16), self.dp(12))
+        main_layout.setSpacing(self.dp(10))
         
         # ── 标题栏：Logo + 主题/语言切换 ──
         top_row = QHBoxLayout()
@@ -832,23 +1533,31 @@ class VivoOtaTrackerGUI(QMainWindow):
         if os.path.exists(logo_path):
             logo_pixmap = QPixmap(logo_path)
             if not logo_pixmap.isNull():
-                logo_pixmap = logo_pixmap.scaledToHeight(36, Qt.SmoothTransformation)
+                logo_pixmap = logo_pixmap.scaledToHeight(self.dp(36), Qt.SmoothTransformation)
                 self.logo_label.setPixmap(logo_pixmap)
         else:
             self.logo_label.setText("Vivo OTA")
-            self.logo_label.setStyleSheet("font-weight:bold; font-size:15px; color:#4a90d9;")
-        self.logo_label.setFixedHeight(40)
+            self.logo_label.setStyleSheet(f"font-weight:bold; font-size:{self.dp(15)}px; color:#4a90d9;")
+        self.logo_label.setFixedHeight(self.dp(40))
         top_row.addWidget(self.logo_label)
+        
+        # 标题文字
+        self.title_label = QLabel("Vivo OTA Tracker")
+        self.title_label.setStyleSheet(f"font-weight:bold; font-size:{self.dp(14)}px; color:#1a1a2e;")
+        self.title_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.title_label.setFixedHeight(self.dp(40))
+        top_row.addWidget(self.title_label)
+        
         top_row.addStretch()
         self.lang_btn = QPushButton(t('lang_toggle', self.lang))
         self.lang_btn.setObjectName("iconBtn")
         self.lang_btn.setToolTip(t('lang_tip', self.lang))
-        self.lang_btn.setFixedSize(48, 32)
+        self.lang_btn.setFixedSize(self.dp(48), self.dp(32))
         self.lang_btn.clicked.connect(self.toggle_language)
         top_row.addWidget(self.lang_btn)
         self.theme_btn = QPushButton(t('theme_toggle', self.lang))
         self.theme_btn.setObjectName("iconBtn")
-        self.theme_btn.setFixedSize(120, 32)
+        self.theme_btn.setFixedSize(self.dp(120), self.dp(32))
         self.theme_btn.clicked.connect(self.toggle_theme)
         top_row.addWidget(self.theme_btn)
         main_layout.addLayout(top_row)
@@ -859,22 +1568,22 @@ class VivoOtaTrackerGUI(QMainWindow):
         
         row0 = QHBoxLayout()
         self.series_label = QLabel(t('series', self.lang))
-        self.series_label.setFixedWidth(120)
+        self.series_label.setFixedWidth(self.dp(120))
         self.series_label.setAlignment(Qt.AlignCenter)
         row0.addWidget(self.series_label)
-        self.series_combo = QComboBox()
-        self.series_combo.addItems(list(DEVICE_DATABASE.keys()))
-        self.series_combo.currentTextChanged.connect(self.on_series_changed)
+        self.series_combo = AnimatedComboBox()
+        self._populate_series_combo()
+        self.series_combo.currentIndexChanged.connect(self.on_series_changed)
         row0.addWidget(self.series_combo)
         device_model_layout.addLayout(row0)
         
         row0_2 = QHBoxLayout()
         self.model_label = QLabel(t('model', self.lang))
-        self.model_label.setFixedWidth(120)
+        self.model_label.setFixedWidth(self.dp(120))
         self.model_label.setAlignment(Qt.AlignCenter)
         row0_2.addWidget(self.model_label)
-        self.model_combo = QComboBox()
-        self.model_combo.setMinimumWidth(400)
+        self.model_combo = AnimatedComboBox()
+        self.model_combo.setMinimumWidth(self.dp(400))
         self.model_combo.currentIndexChanged.connect(self.on_model_changed)
         row0_2.addWidget(self.model_combo)
         device_model_layout.addLayout(row0_2)
@@ -887,7 +1596,7 @@ class VivoOtaTrackerGUI(QMainWindow):
         
         row1 = QHBoxLayout()
         self.model_sw_ver_label = QLabel(t('model_sw_ver_label', self.lang))
-        self.model_sw_ver_label.setFixedWidth(120)
+        self.model_sw_ver_label.setFixedWidth(self.dp(120))
         self.model_sw_ver_label.setToolTip(t('model_sw_ver_tip', self.lang))
         self.model_sw_ver_label.setAlignment(Qt.AlignCenter)
         row1.addWidget(self.model_sw_ver_label)
@@ -898,7 +1607,7 @@ class VivoOtaTrackerGUI(QMainWindow):
         
         row2 = QHBoxLayout()
         self.device_model_label = QLabel(t('device_model_label', self.lang))
-        self.device_model_label.setFixedWidth(120)
+        self.device_model_label.setFixedWidth(self.dp(120))
         self.device_model_label.setToolTip(t('device_model_tip', self.lang))
         self.device_model_label.setAlignment(Qt.AlignCenter)
         row2.addWidget(self.device_model_label)
@@ -909,24 +1618,27 @@ class VivoOtaTrackerGUI(QMainWindow):
         
         row3 = QHBoxLayout()
         self.sw_version_label = QLabel(t('sw_version_label', self.lang))
-        self.sw_version_label.setFixedWidth(120)
+        self.sw_version_label.setFixedWidth(self.dp(120))
         self.sw_version_label.setToolTip(t('sw_version_tip', self.lang))
         self.sw_version_label.setAlignment(Qt.AlignCenter)
         row3.addWidget(self.sw_version_label)
         self.sw_version_edit = QLineEdit()
         self.sw_version_edit.setPlaceholderText(t('sw_version_ph', self.lang))
+        self.sw_version_edit.textChanged.connect(self.on_sw_version_changed)
         row3.addWidget(self.sw_version_edit)
         config_layout.addLayout(row3)
         
         row4 = QHBoxLayout()
         self.android_ver_label = QLabel(t('android_ver_label', self.lang))
-        self.android_ver_label.setFixedWidth(120)
+        self.android_ver_label.setFixedWidth(self.dp(120))
         self.android_ver_label.setToolTip(t('android_ver_tip', self.lang))
         self.android_ver_label.setAlignment(Qt.AlignCenter)
         row4.addWidget(self.android_ver_label)
-        self.android_ver_edit = QLineEdit()
-        self.android_ver_edit.setPlaceholderText(t('android_ver_ph', self.lang))
-        self.android_ver_edit.setFixedWidth(80)
+        self.android_ver_edit = AnimatedComboBox()
+        self.android_ver_edit.addItems([str(version) for version in range(10, 17)])
+        self.android_ver_edit.setCurrentText("16")
+        self.android_ver_edit.setToolTip(t('android_ver_tip', self.lang))
+        self.android_ver_edit.setFixedWidth(self.dp(80))
         row4.addWidget(self.android_ver_edit)
         row4.addStretch()
         config_layout.addLayout(row4)
@@ -942,7 +1654,7 @@ class VivoOtaTrackerGUI(QMainWindow):
         icon_path = resource_path("assets/ic_upgrade.png")
         if os.path.exists(icon_path):
             self.run_btn.setIcon(QIcon(icon_path))
-            self.run_btn.setIconSize(QSize(20, 20))
+            self.run_btn.setIconSize(QSize(self.dp(20), self.dp(20)))
         self.verbose_checkbox = QCheckBox(t('verbose_mode', self.lang))
         self.verbose_checkbox.setToolTip(t('verbose_tip', self.lang))
         self.verbose_checkbox.stateChanged.connect(self.on_verbose_changed)
@@ -953,7 +1665,7 @@ class VivoOtaTrackerGUI(QMainWindow):
         btn_icon_path = resource_path("assets/originui_vtoolbar_icon_save_rom13_5.png")
         if os.path.exists(btn_icon_path):
             self.copy_btn.setIcon(QIcon(btn_icon_path))
-            self.copy_btn.setIconSize(QSize(18, 18))
+            self.copy_btn.setIconSize(QSize(self.dp(18), self.dp(18)))
         button_layout.addStretch()
         button_layout.addWidget(self.run_btn)
         button_layout.addStretch()
@@ -969,6 +1681,7 @@ class VivoOtaTrackerGUI(QMainWindow):
         # ── 日志输出 ──
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
+        self.log_output.setFixedHeight(self.dp(220))
         main_layout.addWidget(self.log_output)
         
         # ── 底部信息标签 ──
@@ -977,6 +1690,9 @@ class VivoOtaTrackerGUI(QMainWindow):
         self.credit_label.setTextFormat(1)  # Qt.RichText
         self._update_credit_label()
         main_layout.addWidget(self.credit_label)
+
+        self._init_update_log_panel()
+        self._init_toast()
         
         # ── 进程对象 ──
         self.process = QProcess()
@@ -987,24 +1703,164 @@ class VivoOtaTrackerGUI(QMainWindow):
         # ── 应用初始主题 ──
         self._apply_theme()
         
-        # 初始化型号列表
-        self.on_series_changed(self.series_combo.currentText())
+        # 初始化型号列表占位项
+        self.on_series_changed()
+
+    def _init_update_log_panel(self):
+        """初始化右侧更新日志网页面板。"""
+        self.update_log_panel = QWidget(self.central_widget)
+        self.update_log_panel.setObjectName("updateLogPanel")
+        self.update_log_panel.hide()
+
+        panel_layout = QVBoxLayout(self.update_log_panel)
+        panel_layout.setContentsMargins(self.dp(12), self.dp(10), self.dp(12), self.dp(12))
+        panel_layout.setSpacing(self.dp(8))
+
+        header_layout = QHBoxLayout()
+        self.update_log_title = QLabel(t('update_log_title', self.lang))
+        self.update_log_title.setObjectName("updateLogTitle")
+        header_layout.addWidget(self.update_log_title)
+        header_layout.addStretch()
+
+        self.update_log_close_btn = QPushButton("×")
+        self.update_log_close_btn.setObjectName("updateLogCloseBtn")
+        self.update_log_close_btn.setFixedSize(self.dp(30), self.dp(28))
+        self.update_log_close_btn.clicked.connect(self.hide_update_log_panel)
+        header_layout.addWidget(self.update_log_close_btn)
+        panel_layout.addLayout(header_layout)
+
+        self.update_log_browser = QTextBrowser()
+        self.update_log_browser.setObjectName("updateLogBrowser")
+        self.update_log_browser.setOpenExternalLinks(True)
+        panel_layout.addWidget(self.update_log_browser, 1)
+
+        self.update_log_toggle_btn = QPushButton(t('update_log_expand', self.lang), self.central_widget)
+        self.update_log_toggle_btn.setObjectName("updateLogToggleBtn")
+        self.update_log_toggle_btn.setFixedSize(self.dp(34), self.dp(118))
+        self.update_log_toggle_btn.clicked.connect(self.toggle_update_log_panel)
+        self.update_log_toggle_btn.hide()
+
+        self._position_update_log_panel(False)
+
+    def _init_toast(self):
+        """初始化右下角气泡提示。"""
+        self.toast_label = QLabel(self.central_widget)
+        self.toast_label.setObjectName("toastBubble")
+        self.toast_label.hide()
     
     # ── 主题/语言切换 ───────────────────────────────────
     def _apply_theme(self):
         """应用当前主题样式"""
         theme = THEMES[self.theme]
-        self.setStyleSheet(make_stylesheet(theme))
+        self.setStyleSheet(make_stylesheet(theme, self.ui_scale))
         self.theme_btn.setText(t('theme_toggle', self.lang) if self.theme == 'light' else t('theme_toggle', self.lang))
         if self.theme == 'light':
             self.theme_btn.setText('🌙 暗色模式')
         else:
             self.theme_btn.setText('☀️ 亮色模式')
+        QTimer.singleShot(0, self._apply_window_style)
+
+    def _apply_window_style(self):
+        """应用 Windows 窗口标题栏/材质样式（py-window-styles）。"""
+        if pywinstyles is None or sys.platform != 'win32':
+            return
+
+        config = WINDOW_STYLE_CONFIG[self.theme]
+        hwnd = int(self.winId())
+        style_target = type(
+            "PyWinStyleTarget",
+            (),
+            {
+                "winId": lambda target: hwnd,
+                "setStyleSheet": lambda target, stylesheet: None,
+            },
+        )()
+        try:
+            pywinstyles.apply_style(style_target, config['style'])
+        except Exception:
+            fallback_style = config.get('fallback_style')
+            if not fallback_style or fallback_style == config['style']:
+                return
+            try:
+                pywinstyles.apply_style(style_target, fallback_style)
+            except Exception:
+                return
+
+        color_actions = (
+            ('change_header_color', 'header_color'),
+            ('change_title_color', 'title_color'),
+            ('change_border_color', 'border_color'),
+        )
+        for action_name, color_key in color_actions:
+            action = getattr(pywinstyles, action_name, None)
+            if action is None:
+                continue
+            try:
+                action(hwnd, config[color_key])
+            except Exception:
+                pass
+
+    def _fade_theme_to(self, next_theme):
+        """用淡出/淡入动画切换主题。"""
+        if not hasattr(self, 'central_widget'):
+            return
+
+        if self._theme_fade_animation is not None:
+            self._theme_fade_animation.stop()
+
+        effect = QGraphicsOpacityEffect(self.central_widget)
+        effect.setOpacity(1.0)
+        self.central_widget.setGraphicsEffect(effect)
+        self._theme_fade_effect = effect
+
+        fade_out = QPropertyAnimation(effect, b"opacity", self)
+        fade_out.setStartValue(1.0)
+        fade_out.setEndValue(0.32)
+        fade_out.setDuration(150)
+        fade_out.setEasingCurve(QEasingCurve.OutCubic)
+
+        fade_in = QPropertyAnimation(effect, b"opacity", self)
+        fade_in.setStartValue(0.32)
+        fade_in.setEndValue(1.0)
+        fade_in.setDuration(240)
+        fade_in.setEasingCurve(QEasingCurve.OutCubic)
+
+        def apply_next_theme():
+            self.theme = next_theme
+            self._apply_theme()
+            self._theme_fade_animation = fade_in
+            fade_in.start()
+
+        def clear_fade_effect():
+            if self._theme_fade_effect is effect:
+                self.central_widget.setGraphicsEffect(None)
+                self._theme_fade_effect = None
+            self._theme_fade_animation = None
+
+        fade_out.finished.connect(apply_next_theme)
+        fade_in.finished.connect(clear_fade_effect)
+        self._theme_fade_animation = fade_out
+        fade_out.start()
+
+    def showEvent(self, event):
+        """窗口显示后重新应用一次标题栏样式，确保 HWND 已创建。"""
+        super().showEvent(event)
+        if not self._screen_change_connected and self.windowHandle() is not None:
+            self.windowHandle().screenChanged.connect(self._on_screen_changed)
+            self._screen_change_connected = True
+        QTimer.singleShot(100, self._apply_window_style)
+
+    def resizeEvent(self, event):
+        """窗口尺寸变化时保持右侧更新日志面板贴边。"""
+        super().resizeEvent(event)
+        if hasattr(self, 'update_log_panel'):
+            self._position_update_log_panel(self._update_log_visible)
+        self._position_toast()
     
     def toggle_theme(self):
         """切换浅色/深色模式"""
-        self.theme = 'dark' if self.theme == 'light' else 'light'
-        self._apply_theme()
+        next_theme = 'dark' if self.theme == 'light' else 'light'
+        self._fade_theme_to(next_theme)
     
     def _update_credit_label(self):
         """刷新底部版权标签"""
@@ -1045,49 +1901,90 @@ class VivoOtaTrackerGUI(QMainWindow):
         self.sw_version_edit.setPlaceholderText(t('sw_version_ph', self.lang))
         self.android_ver_label.setText(t('android_ver_label', self.lang))
         self.android_ver_label.setToolTip(t('android_ver_tip', self.lang))
-        self.android_ver_edit.setPlaceholderText(t('android_ver_ph', self.lang))
+        self.android_ver_edit.setToolTip(t('android_ver_tip', self.lang))
         self.run_btn.setText(t('start_get_link', self.lang))
         self.verbose_checkbox.setText(t('verbose_mode', self.lang))
         self.verbose_checkbox.setToolTip(t('verbose_tip', self.lang))
         self.copy_btn.setText(t('copy_clipboard', self.lang))
+        self.update_log_title.setText(t('update_log_title', self.lang))
+        self._update_log_toggle_text()
         self._update_credit_label()
     
     def toggle_language(self):
         """切换中/英文"""
         new_lang = 'en' if self.lang == 'zh' else 'zh'
+        old_series_key = self.series_combo.currentData()
+        old_model_data = self.model_combo.currentData()
         self.lang = new_lang
         self._refresh_ui_texts()
-        # 重新加载型号列表以更新下拉框显示文本
-        current_series = self.series_combo.currentText()
-        current_idx = self.model_combo.currentIndex()
-        self.on_series_changed(current_series)
-        self.model_combo.setCurrentIndex(current_idx)
+        self._populate_series_combo(old_series_key)
+        self.on_series_changed()
+        if old_model_data:
+            for index in range(self.model_combo.count()):
+                if self.model_combo.itemData(index) == old_model_data:
+                    self.model_combo.setCurrentIndex(index)
+                    break
+
+    def _populate_series_combo(self, selected_key=None):
+        """填充系列下拉框，显示文本随语言变化，内部 key 不变。"""
+        self.series_combo.blockSignals(True)
+        self.series_combo.clear()
+        self.series_combo.addItem(t('select_device', self.lang), None)
+        for series in DEVICE_DATABASE.keys():
+            self.series_combo.addItem(display_series_name(series, self.lang), series)
+        if selected_key:
+            for index in range(self.series_combo.count()):
+                if self.series_combo.itemData(index) == selected_key:
+                    self.series_combo.setCurrentIndex(index)
+                    break
+            else:
+                self.series_combo.setCurrentIndex(0)
+        else:
+            self.series_combo.setCurrentIndex(0)
+        self.series_combo.blockSignals(False)
     
-    def on_series_changed(self, series):
-        """系列变化时更新型号列表（格式：设备名 | PD2408 | V2408A）"""
+    def on_series_changed(self, index=None):
+        """系列变化时更新型号列表。"""
+        series = self.series_combo.currentData()
         self.model_combo.clear()
+        self.model_combo.addItem(t('select_device', self.lang), None)
+        if series not in DEVICE_DATABASE:
+            self.model_sw_ver_edit.clear()
+            self.device_model_edit.clear()
+            self.current_config['MODEL_SW_VER'] = ''
+            self.current_config['DEVICE_MODEL'] = ''
+            return
         if series in DEVICE_DATABASE:
             devices = DEVICE_DATABASE[series]
             for device in devices:
-                display = f"{device['model']}  |  {device['codename']}  |  {device['model_sw_ver']}"
-                self.model_combo.addItem(display, device)
+                self.model_combo.addItem(display_model_name(device, self.lang), device)
     
     def on_model_changed(self, index):
         """型号变化时自动填充参数并同步 current_config"""
         if index >= 0:
             device = self.model_combo.currentData()
-            if device:
-                # MODEL_SW_VER 填 codename（如 PD2408）
-                self.model_sw_ver_edit.setText(device["codename"])
-                # DEVICE_MODEL 填 model_sw_ver（如 V2408A）
-                self.device_model_edit.setText(device["model_sw_ver"])
-                # 同步到 current_config
-                self.current_config['MODEL_SW_VER'] = device["codename"]
-                self.current_config['DEVICE_MODEL'] = device["model_sw_ver"]
+            if not device:
+                return
+            # MODEL_SW_VER 填 codename（如 PD2408）
+            self.model_sw_ver_edit.setText(device["codename"])
+            # DEVICE_MODEL 填 model_sw_ver（如 V2408A）
+            self.device_model_edit.setText(device["model_sw_ver"])
+            # 同步到 current_config
+            self.current_config['MODEL_SW_VER'] = device["codename"]
+            self.current_config['DEVICE_MODEL'] = device["model_sw_ver"]
+
+    def on_sw_version_changed(self, text):
+        """优先根据系统版本号开头自动推断 Android 版本。"""
+        match = re.match(r'\s*(1[0-6])(?:\.|$)', text or '')
+        if not match:
+            return
+        detected = match.group(1)
+        if self.android_ver_edit.findText(detected) >= 0:
+            self.android_ver_edit.setCurrentText(detected)
     
     def _style_messagebox(self, msg_box):
         """为 QMessageBox 应用当前主题样式，确保弹窗颜色与程序一致"""
-        msg_box.setStyleSheet(make_stylesheet(THEMES[self.theme]))
+        msg_box.setStyleSheet(make_stylesheet(THEMES[self.theme], self.ui_scale))
     
     def _detect_device_type(self):
         """根据型号自动识别设备类型（DPD开头=平板，否则=手机）"""
@@ -1107,7 +2004,7 @@ class VivoOtaTrackerGUI(QMainWindow):
         self.current_config['MODEL_SW_VER'] = self.model_sw_ver_edit.text().strip()
         self.current_config['DEVICE_MODEL'] = self.device_model_edit.text().strip()
         self.current_config['SW_VERSION'] = self.sw_version_edit.text().strip()
-        self.current_config['ANDROID_VER'] = self.android_ver_edit.text().strip()
+        self.current_config['ANDROID_VER'] = self.android_ver_edit.currentText().strip()
         
         # 验证输入：任一字段为空或安卓版本非数字则弹窗提示
         android_ver = self.current_config['ANDROID_VER']
@@ -1133,7 +2030,10 @@ class VivoOtaTrackerGUI(QMainWindow):
         self.log_output.clear()
         self.raw_output = ""
         self.last_result_text = ""
+        self.last_result_data = {}
+        self.last_update_log_text = ""
         self.copy_btn.setVisible(False)
+        self.reset_update_log_panel()
         
         # 简洁模式：显示等待提示
         if not self.verbose_checkbox.isChecked():
@@ -1246,6 +2146,199 @@ class VivoOtaTrackerGUI(QMainWindow):
             except Exception:
                 pass
         self.work_dir = None
+
+    def _extract_raw_update_payload(self, raw_text):
+        """从 Java 输出中提取 OTA 原始响应 JSON。"""
+        match = re.search(
+            r'=== Raw Update Payload Base64 ===\s*([A-Za-z0-9+/=\r\n]+?)\s*=== End Raw Update Payload Base64 ===',
+            raw_text,
+            re.DOTALL
+        )
+        if not match:
+            return ""
+        encoded = re.sub(r'\s+', '', match.group(1))
+        try:
+            return base64.b64decode(encoded).decode('utf-8', errors='replace')
+        except Exception:
+            return ""
+
+    def _looks_like_html(self, text):
+        return bool(re.search(r'</?(html|body|div|p|br|span|ul|ol|li|table|section|h[1-6])\b', text, re.I))
+
+    def _looks_like_update_log_url(self, text):
+        lower = text.lower()
+        return (
+            lower.startswith(('http://', 'https://')) and
+            (
+                'sysdesc.vivo.com.cn' in lower or
+                '/upgrade/h5/' in lower or
+                lower.endswith('/index.html')
+            )
+        )
+
+    def _extract_update_log_url(self, raw_text):
+        """从 OTA 响应 JSON 中提取更新日志网页 URL。"""
+        payload = self._extract_raw_update_payload(raw_text)
+        search_text = payload or raw_text
+        if not search_text:
+            return ""
+
+        try:
+            data = json.loads(payload) if payload else None
+        except Exception:
+            data = None
+
+        candidates = []
+        key_tokens = ('desc', 'log', 'content', 'html', 'url', 'h5', 'web', 'detail', 'release', 'note')
+
+        def add_candidate(key, value):
+            if not isinstance(value, str):
+                return
+            text = value.strip().replace('\\/', '/')
+            if not self._looks_like_update_log_url(text):
+                return
+            score = 0
+            lower_key = str(key).lower()
+            lower = text.lower()
+            if 'sysdesc.vivo.com.cn' in lower:
+                score += 40
+            if '/upgrade/h5/' in lower:
+                score += 30
+            if lower.endswith('/index.html'):
+                score += 20
+            if any(token in lower_key for token in key_tokens):
+                score += 15
+            candidates.append((score, text))
+
+        def walk(obj, key=''):
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    walk(v, k)
+            elif isinstance(obj, list):
+                for item in obj:
+                    walk(item, key)
+            else:
+                add_candidate(key, obj)
+
+        if data is not None:
+            walk(data)
+        else:
+            for match in re.finditer(r'https?://[^\s"\'<>]+', search_text.replace('\\/', '/'), re.I):
+                add_candidate('url', match.group(0))
+
+        if not candidates:
+            return ""
+
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates[0][1]
+
+    def _build_update_log_html(self, content, is_html=None):
+        """包装更新日志内容，供右侧网页面板显示。"""
+        if is_html is None:
+            is_html = self._looks_like_html(content)
+        body = content if is_html else html.escape(content).replace('\r\n', '\n').replace('\n', '<br>')
+        bg = 'rgba(15,15,26,0.0)' if self.theme == 'dark' else 'rgba(255,255,255,0.0)'
+        text_color = THEMES[self.theme]['text']
+        secondary = THEMES[self.theme]['text_secondary']
+        accent = THEMES[self.theme]['accent']
+        return f"""
+        <!doctype html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <style>
+            body {{
+              margin: 0;
+              padding: 0;
+              background: {bg};
+              color: {text_color};
+              font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+              font-size: {self.dp(13)}px;
+              line-height: 1.7;
+            }}
+            a {{ color: {accent}; }}
+            p {{ margin: 0 0 {self.dp(10)}px 0; }}
+            ul, ol {{ margin-top: {self.dp(6)}px; padding-left: {self.dp(22)}px; }}
+            li {{ margin: {self.dp(4)}px 0; }}
+            h1, h2, h3 {{ color: {accent}; margin: {self.dp(8)}px 0; }}
+            .empty {{ color: {secondary}; }}
+          </style>
+        </head>
+        <body>{body}</body>
+        </html>
+        """
+
+    def _extract_update_log_html(self, raw_text):
+        """从 OTA 响应 JSON 中递归提取可显示的更新日志 HTML。"""
+        payload = self._extract_raw_update_payload(raw_text)
+        if not payload:
+            return ""
+
+        try:
+            data = json.loads(payload)
+        except Exception:
+            data = None
+
+        candidates = []
+        key_tokens = (
+            'log', 'desc', 'description', 'content', 'release', 'note',
+            'intro', 'detail', 'explain', 'feature', 'change'
+        )
+        negative_tokens = ('url', 'pk', 'md5', 'hash', 'name', 'version', 'len', 'size')
+
+        def add_candidate(key, value):
+            if not isinstance(value, str):
+                return
+            text = value.strip()
+            if len(text) < 12:
+                return
+            lower_key = str(key).lower()
+            lower_text = text.lower()
+            if lower_text.startswith(('http://', 'https://')):
+                return
+            if any(token in lower_key for token in negative_tokens):
+                return
+            score = 0
+            if any(token in lower_key for token in key_tokens):
+                score += 20
+            if self._looks_like_html(text):
+                score += 30
+            if '<br' in lower_text or '&lt;' in lower_text:
+                score += 8
+            if any(word in text for word in ('更新', '优化', '修复', '新增', '系统', '安全', '稳定')):
+                score += 8
+            score += min(len(text) // 80, 12)
+            if score > 0:
+                candidates.append((score, text))
+
+        def walk(obj, key=''):
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    walk(v, k)
+            elif isinstance(obj, list):
+                for item in obj:
+                    walk(item, key)
+            else:
+                add_candidate(key, obj)
+
+        if data is not None:
+            walk(data)
+        else:
+            for key in key_tokens:
+                pattern = rf'"([^"]*{re.escape(key)}[^"]*)"\s*:\s*"((?:\\.|[^"\\])*)"'
+                for match in re.finditer(pattern, payload, re.I):
+                    try:
+                        value = json.loads('"' + match.group(2) + '"')
+                    except Exception:
+                        value = match.group(2)
+                    add_candidate(match.group(1), value)
+
+        if not candidates:
+            return ""
+
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        content = candidates[0][1]
+        return self._build_update_log_html(content)
     
     def parse_results(self, raw_text):
         """解析 Java 输出，提取关键信息为简洁格式"""
@@ -1281,46 +2374,45 @@ class VivoOtaTrackerGUI(QMainWindow):
             result['download_url'] = url_match.group(1).strip()
         
         return result
+
+    def _current_device_name(self):
+        device = self.model_combo.currentData() if hasattr(self, 'model_combo') else None
+        if isinstance(device, dict) and device.get('model'):
+            return device['model']
+        if self.current_config.get('DEVICE_MODEL') or self.current_config.get('MODEL_SW_VER'):
+            return f"{self.current_config.get('DEVICE_MODEL', '')} / {self.current_config.get('MODEL_SW_VER', '')}".strip(' /')
+        return ""
+
+    def _device_type_display(self, device_type):
+        mapping = {
+            'phone': t('phone_cn', self.lang),
+            'tablet': t('tablet_cn', self.lang),
+        }
+        return mapping.get(device_type, device_type or "")
+
+    def _result_lines(self, parsed, update_log_value=""):
+        device_type = parsed.get('device_type') or self.current_config.get('DEVICE_TYPE', '')
+        return [
+            "vivo OTA Tracker By mytiantian",
+            "",
+            f"设备名称：{self._current_device_name()}",
+            f"设备类型：{self._device_type_display(device_type)}",
+            f"Android版本：{self.current_config.get('ANDROID_VER', '')}",
+            f"软件版本：{parsed.get('update_version', '')}",
+            f"软件包大小：{parsed.get('file_size', '') + ' MB' if parsed.get('file_size') else ''}",
+            f"下载链接：{parsed.get('download_url', '')}",
+            f"版本更新日志：{update_log_value}",
+        ]
     
-    def format_clean_result(self, parsed):
+    def format_clean_result(self, parsed, update_log_value=""):
         """格式化解析结果为简洁中文输出"""
-        lines = []
-        lines.append("")
-        lines.append("=" * 50)
-        lines.append(f"            {t('ota_banner', self.lang)}")
-        lines.append("=" * 50)
-        
-        # 设备类型
-        dt = parsed.get('device_type', '')
-        dt_map = {'phone': t('phone_cn', self.lang), 'tablet': t('tablet_cn', self.lang)}
-        dt_cn = dt_map.get(dt, dt)
-        lines.append(f"  {t('device_type_field', self.lang)}: {dt} ({dt_cn})")
-        
-        # 设备型号
-        if 'device_model' in parsed and 'codename' in parsed:
-            lines.append(f"  {t('device_model_field', self.lang)}: {parsed['device_model']} / {parsed['codename']}")
-        elif 'device_model' in parsed:
-            lines.append(f"  {t('device_model_field', self.lang)}: {parsed['device_model']}")
-        
-        # Android 版本
-        android_ver = self.current_config.get('ANDROID_VER', '')
-        if android_ver:
-            lines.append(f"  {t('android_ver_field', self.lang)}: {android_ver}")
-        
-        # 软件版本（优先 update_version）
-        if 'update_version' in parsed:
-            lines.append(f"  {t('sw_ver_field', self.lang)}: {parsed['update_version']}")
-        
-        # 软件包大小
-        if 'file_size' in parsed:
-            lines.append(f"  {t('file_size_field', self.lang)}: {parsed['file_size']} MB")
-        
-        # 下载链接
-        if 'download_url' in parsed:
-            lines.append(f"  {t('download_url_field', self.lang)}: {parsed['download_url']}")
-        
-        lines.append("=" * 50)
-        return '\n'.join(lines)
+        return '\n'.join(self._result_lines(parsed, update_log_value))
+
+    def format_clipboard_result(self, parsed, update_log_link=""):
+        """格式化剪贴板文本。"""
+        lines = self._result_lines(parsed, "")
+        lines = lines[:-1] + ["", f"版本更新日志：{update_log_link or ''}"]
+        return '\n'.join(lines).strip()
     
     def copy_to_clipboard(self):
         """一键复制简洁结果到剪贴板"""
@@ -1339,15 +2431,7 @@ class VivoOtaTrackerGUI(QMainWindow):
         clipboard = QApplication.clipboard()
         clipboard.setText(self.last_result_text, QClipboard.Clipboard)
         clipboard.setText(self.last_result_text, QClipboard.Selection)
-        msg_box = QMessageBox(self)
-        msg_box.setWindowTitle(t('success_title', self.lang))
-        msg_box.setText(t('copied', self.lang))
-        msg_box.setIcon(QMessageBox.Information)
-        info_icon_path = resource_path("assets/icon.png")
-        if os.path.exists(info_icon_path):
-            msg_box.setWindowIcon(QIcon(info_icon_path))
-        self._style_messagebox(msg_box)
-        msg_box.exec_()
+        self.show_toast(t('copied', self.lang))
     
     def on_process_finished(self, exit_code):
         """进程结束处理"""
@@ -1362,18 +2446,21 @@ class VivoOtaTrackerGUI(QMainWindow):
             return
         
         if self.current_stage == 'run':
+            update_log_url = self._extract_update_log_url(self.raw_output)
+            update_log_html = self._extract_update_log_html(self.raw_output)
+            update_log_value = update_log_url or ("已获取，点击右侧按钮查看" if update_log_html else "")
+            parsed = self.parse_results(self.raw_output)
+            self.last_result_data = parsed
             # 简洁模式：解析并格式化结果
             if not self.verbose_checkbox.isChecked():
-                parsed = self.parse_results(self.raw_output)
-                clean_result = self.format_clean_result(parsed)
+                clean_result = self.format_clean_result(parsed, update_log_value)
                 self.log_output.clear()
                 self.log_output.append(clean_result)
-                self.last_result_text = clean_result.strip()
+                self.last_result_text = self.format_clipboard_result(parsed, update_log_url)
                 self.copy_btn.setVisible(True)
             else:
                 # 详细模式也缓存一份纯文本结果用于复制
-                parsed = self.parse_results(self.raw_output)
-                self.last_result_text = self.format_clean_result(parsed).strip()
+                self.last_result_text = self.format_clipboard_result(parsed, update_log_url)
                 self.copy_btn.setVisible(True)
             
             self.log_output.append("")
@@ -1382,6 +2469,12 @@ class VivoOtaTrackerGUI(QMainWindow):
             self.run_btn.setEnabled(True)
             self.current_stage = None
             self.raw_output = ""
+            if update_log_url:
+                self.load_update_log_url(update_log_url)
+            elif update_log_html:
+                self.show_update_log_panel(update_log_html)
+                self.last_update_log_text = self.update_log_browser.toPlainText().strip()
+                self.last_result_text = self.format_clipboard_result(parsed, "")
     
     def closeEvent(self, event):
         """关闭窗口时清理"""
@@ -1393,6 +2486,7 @@ class VivoOtaTrackerGUI(QMainWindow):
         event.accept()
 
 if __name__ == "__main__":
+    configure_high_dpi()
     app = QApplication(sys.argv)
     window = VivoOtaTrackerGUI()
     window.show()

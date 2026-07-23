@@ -2,12 +2,11 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+*.pyc
+
+# Build output
 dist/
 build/
-*.spec
-
-# Embedded runtimes (not source code)
-python/
 
 # IDE
 .idea/
@@ -22,3 +21,4 @@ Desktop.ini
 
 # PyInstaller
 *.manifest
+*.spec~
